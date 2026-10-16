@@ -24,7 +24,7 @@
   HOW TO RUN
   Needs HTTPS (camera + sensors). Put this file and the assets folder on any static host
   (GitHub Pages, Netlify Drop, Glitch), open the link on a phone, tap START.
-  On a laptop it runs in a test mode: drag or use ← → to turn, W/S to walk.
+  On a laptop it runs in a test mode: drag or use ← → to turn.
 
   No external libraries. The statue uses two image assets, with a code-drawn
   fallback. Footsteps and heartbeat are synthesized; the catch scream is a
@@ -53,7 +53,6 @@
          pointer-events: none; font-size: 14px; letter-spacing: .04em; text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; }
   #hud .time { font-size: 28px; font-family: var(--font-title); color: var(--fg); }
   #hud .distance { margin-top: 3px; color: var(--fg); font-size: 12px; }
-  #hud .steps { margin-top: 3px; color: var(--dim); font-size: 11px; }
   #hud .distance.danger { color: var(--danger); }
   #hud .debug { color: var(--dim); font-size: 12px; text-align: right; white-space: pre; }
   #hud .debug[hidden] { display: none; }
@@ -82,14 +81,14 @@
 <div id="flash"></div>
 
 <div id="hud">
-  <div><div class="time" id="time">0.0</div><div class="distance" id="distance">NEAREST 10.0 m</div><div class="steps" id="steps">STEPS 0</div></div>
+  <div><div class="time" id="time">0.0</div><div class="distance" id="distance">NEAREST 10.0 m</div></div>
   <div class="debug" id="debug" hidden></div>
 </div>
 
 <div class="overlay" id="start">
   <h1>Don't Blink</h1>
-  <p>Two angels are in the room. Each moves when you're not looking. Turn to freeze them, then walk away to escape.</p>
-  <p>Your steps are estimated from phone motion. Reach 22 m from both angels or survive 60 seconds. An angel catches you within 1.4 m.</p>
+  <p>Two angels are in the room. Each moves when you're not looking. Turn to freeze them.</p>
+  <p>You stay in one place. Survive 60 seconds without letting either angel get within 1.4 m.</p>
   <div class="opts">
     <label><input type="checkbox" id="optCartoon"> cartoon mode</label>
     <label><input type="checkbox" id="optFlash" checked> flash on catch</label>
@@ -120,9 +119,6 @@ const PARAMS = {
                          //   0 = unfair (tracking flicker), 1.5 = too kind.
   catchDistance: 1.4,    // metres. The statue reaches you at about arm's length.
   roundLength:   60,     // seconds to survive.
-  escapeDistance: 22,    // metres from BOTH angels to win by escaping.
-  stepLength:    0.65,   // estimated metres per detected phone step.
-  stepPulse:     0.9,    // acceleration peak needed to count a walking step.
   fov:           50,     // degrees. "I can see it" = within ±fov/2 of where you aim.
   hysteresis:    4,      // degrees. Enters frame at fov/2, leaves at fov/2+hysteresis.
   requirePitch:  false,  // true = you must also look roughly at the horizon (±35°).
@@ -155,8 +151,8 @@ function update(dt, inView, s) {
   s.y += (player.y - s.y) / s.distance * step;
   refreshAngel(s);
 
-  // RULE 3 — Distance zero → caught.
-  if (s.distance <= PARAMS.catchDistance) {
+  // RULE 3 — Within reach → caught. Allow for floating-point rounding.
+  if (s.distance <= PARAMS.catchDistance + 0.001) {
     s.distance = PARAMS.catchDistance;
     onCaught();
   }
@@ -177,7 +173,7 @@ let DRAW_ANGEL = true;
 const $ = id => document.getElementById(id);
 const cam = $('cam'), canvas = $('scene'), ctx = canvas.getContext('2d');
 const vignette = $('vignette'), flash = $('flash');
-const timeEl = $('time'), distanceEl = $('distance'), stepsEl = $('steps'), debugEl = $('debug'), noteEl = $('note');
+const timeEl = $('time'), distanceEl = $('distance'), debugEl = $('debug'), noteEl = $('note');
 
 let W = 0, H = 0, DPR = 1;
 function resize() {
@@ -210,49 +206,16 @@ function onOrientation(e) {
   aim.haveSensor = true;
   if (aim.startYaw === null && game.state === 'playing') aim.startYaw = yaw;
 }
-const motion = { baseline: null, ready: true, lastStep: 0, haveData: false, access: false, steps: 0 };
-function onMotion(e) {
-  if (game.state !== 'playing') return;
-  const valid = a => a && a.x != null && a.y != null && a.z != null;
-  const withoutGravity = valid(e.acceleration);
-  const a = withoutGravity ? e.acceleration : e.accelerationIncludingGravity;
-  if (!valid(a)) return;
-  if (!motion.haveData) { motion.haveData = true; stepsEl.textContent = 'MOTION READY · STEPS 0'; }
-  const magnitude = Math.hypot(a.x, a.y, a.z);
-  const raw = withoutGravity ? magnitude : Math.abs(magnitude - 9.81);
-  if (motion.baseline === null) motion.baseline = raw;
-  motion.baseline = motion.baseline * 0.85 + raw * 0.15;
-  const pulse = raw - motion.baseline;
-  if (pulse < 0.35) motion.ready = true;
-  const now = performance.now();
-  if (motion.ready && pulse > PARAMS.stepPulse && now - motion.lastStep > 360) {
-    motion.ready = false; motion.lastStep = now;
-    // A step while watching an angel counts as backing away from it.
-    const heading = aim.yaw + (angels.some(angel => angel.inView) ? 180 : 0);
-    movePlayer(heading, PARAMS.stepLength);
-    motion.steps++;
-    stepsEl.textContent = `MOTION READY · STEPS ${motion.steps}`;
-  }
-}
-
 /* desktop test mode: drag or arrow keys */
 let dragging = false, lastX = 0;
 canvas.addEventListener('pointerdown', e => { if (!aim.haveSensor) { dragging = true; lastX = e.clientX; } });
 addEventListener('pointerup', () => dragging = false);
 addEventListener('pointermove', e => { if (dragging && !aim.haveSensor) { aim.yaw += (e.clientX - lastX) * 0.4; lastX = e.clientX; } });
-const controls = { forward: false, back: false };
 addEventListener('keydown', e => {
-  if (e.key.toLowerCase() === 'w') { controls.forward = true; e.preventDefault(); return; }
-  if (e.key.toLowerCase() === 's') { controls.back = true; e.preventDefault(); return; }
   if (aim.haveSensor) return;
   if (e.key === 'ArrowLeft') aim.yaw -= 6;
   if (e.key === 'ArrowRight') aim.yaw += 6;
 });
-addEventListener('keyup', e => {
-  if (e.key.toLowerCase() === 'w') controls.forward = false;
-  if (e.key.toLowerCase() === 's') controls.back = false;
-});
-addEventListener('blur', () => { controls.forward = false; controls.back = false; });
 
 /* ---- game state ---- */
 const game = { state: 'idle', t: 0, last: 0, cartoon: false, flash: true, debug: false };
@@ -266,12 +229,6 @@ function refreshAngel(angel) {
   angel.distance = Math.hypot(dx, dy);
   angel.bearing = deg(Math.atan2(dx, dy));
 }
-function movePlayer(heading, metres) {
-  player.x += Math.sin(rad(heading)) * metres;
-  player.y += Math.cos(rad(heading)) * metres;
-  for (const angel of angels) refreshAngel(angel);
-}
-
 function spawn() {
   player.x = 0; player.y = 0;
   const base = aim.startYaw ?? aim.yaw;
@@ -302,21 +259,12 @@ async function startGame() {
 
   $('start').hidden = true; $('caught').hidden = true;
   game.state = 'playing'; game.t = 0; game.last = performance.now();
-  controls.forward = false; controls.back = false;
-  motion.baseline = null; motion.ready = true; motion.lastStep = 0; motion.haveData = false; motion.steps = 0;
   aim.startYaw = aim.haveSensor ? aim.yaw : 0;
   spawn();
   timeEl.textContent = '0.0';
   distanceEl.textContent = `NEAREST ${PARAMS.startDistance.toFixed(1)} m`;
   distanceEl.classList.remove('danger');
-  stepsEl.textContent = motion.access ? 'MOTION WAITING' : 'STEP MOTION UNAVAILABLE';
-  if (!noteEl.textContent) noteEl.textContent = 'Walk forward; while watching an angel, steps count as retreat.';
-  setTimeout(() => {
-    if (game.state === 'playing' && motion.access && !motion.haveData) {
-      stepsEl.textContent = 'NO STEP MOTION';
-      noteEl.textContent = 'No motion data. Enable sensor access, or use W/S on desktop.';
-    }
-  }, 3000);
+  if (!noteEl.textContent) noteEl.textContent = 'Turn to keep the angels in view.';
   requestAnimationFrame(loop);
 }
 
@@ -326,17 +274,12 @@ function requestSensorPermission(type) {
   catch (_) { return Promise.resolve('denied'); }
 }
 async function setupSensors() {
-  // Both permission requests must begin during the Start tap on iOS.
+  // Request rotation access during the Start tap on iOS.
   const orientationRequest = requestSensorPermission(typeof DeviceOrientationEvent === 'undefined' ? undefined : DeviceOrientationEvent);
-  const motionRequest = requestSensorPermission(typeof DeviceMotionEvent === 'undefined' ? undefined : DeviceMotionEvent);
-  const [orientationPermission, motionPermission] = await Promise.all([orientationRequest, motionRequest]);
+  const orientationPermission = await orientationRequest;
   if (typeof DeviceOrientationEvent !== 'undefined' && orientationPermission === 'granted')
     addEventListener('deviceorientation', onOrientation, true);
   else noteEl.textContent = 'No rotation sensor — drag to turn.';
-  motion.access = typeof DeviceMotionEvent !== 'undefined' && motionPermission === 'granted';
-  if (motion.access)
-    addEventListener('devicemotion', onMotion, true);
-  else noteEl.textContent = (noteEl.textContent + ' No step sensor — desktop test: W/S.').trim();
 }
 
 async function setupCamera() {
@@ -478,9 +421,6 @@ let heartTimer = 0;
 function loop(now) {
   if (game.state !== 'playing') return;
   const dt = Math.min(0.1, (now - game.last) / 1000); game.last = now; game.t += dt;
-  const walk = Number(controls.forward) - Number(controls.back);
-  if (walk) movePlayer(aim.yaw, walk * PARAMS.walkSpeed * dt);
-
   // Each angel has its own frame check and grace timer.
   const half = PARAMS.fov / 2;
   const pitchOk = !PARAMS.requirePitch || Math.abs(aim.pitch) < 35;
@@ -493,7 +433,6 @@ function loop(now) {
   }
 
   // win
-  if (angels.every(angel => angel.distance >= PARAMS.escapeDistance)) { onEscaped(); return; }
   if (game.t >= PARAMS.roundLength) { onSurvived(); return; }
 
   // Independent footsteps reveal which side is moving; the nearest sets the heartbeat.
@@ -533,7 +472,7 @@ function loop(now) {
   }
   vignette.style.opacity = Math.pow(prox, 1.6).toFixed(3);
   timeEl.textContent = game.t.toFixed(1);
-  distanceEl.textContent = `NEAREST ${nearest.distance.toFixed(1)} m / ESCAPE ${PARAMS.escapeDistance} m`;
+  distanceEl.textContent = `NEAREST ${nearest.distance.toFixed(1)} m`;
   distanceEl.classList.toggle('danger', nearest.distance < PARAMS.catchDistance + 1.5);
   if (game.debug) debugEl.textContent = `yaw ${aim.yaw.toFixed(0)}°\n` + angels.map(angel =>
     `${angel.name}: ${angel.distance.toFixed(2)} m  dx ${angleDiff(angel.bearing, aim.yaw).toFixed(0)}°  ${angel.inView ? 'IN VIEW' : 'out'}${angel.moving ? '  MOVING' : ''}`
@@ -545,7 +484,6 @@ function loop(now) {
 function onCaught() {
   if (game.state !== 'playing') return;
   game.state = 'caught';
-  controls.forward = false; controls.back = false;
   playScream();
   try { if (navigator.vibrate) navigator.vibrate([200, 60, 400]); } catch (_) {}
   // the face, full screen
@@ -563,20 +501,11 @@ function onCaught() {
 }
 function onSurvived() {
   game.state = 'won';
-  controls.forward = false; controls.back = false;
   $('caughtTitle').textContent = 'You survived.';
   const nearest = angels.reduce((a, b) => a.distance <= b.distance ? a : b);
   $('caughtText').textContent = `${PARAMS.roundLength} seconds. The closest angel was ${nearest.distance.toFixed(1)} m away.`;
   $('caught').hidden = false;
 }
-function onEscaped() {
-  game.state = 'won';
-  controls.forward = false; controls.back = false;
-  $('caughtTitle').textContent = 'You escaped.';
-  $('caughtText').textContent = `Both angels are more than ${PARAMS.escapeDistance} m away.`;
-  $('caught').hidden = false;
-}
-
 $('btnStart').addEventListener('click', startGame);
 $('btnRetry').addEventListener('click', () => { heartTimer = 0; startGame(); });
 
