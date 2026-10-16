@@ -5,31 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#0b0b0d">
 <title>Don't Blink</title>
-<!--
-  DON'T BLINK  —  P1 template, "Scan to Play" / S.O.001 Realitatea extinsă (XR)
-  UTM · DJMI Master · practical session 1
-
-  WHAT THIS FILE IS
-  A small phone game. Camera feed as background, gyroscope as aim.
-  Angels begin in random directions outside your starting view. Each freezes while it is in your
-  camera frame and approaches when it is out of frame. If either reaches you,
-  it gets you. Survive ROUND_LENGTH seconds.
-
-  WHAT STUDENTS TOUCH
-    1. PARAMS   — tuning knobs. Change one, play, write down what it did.
-    2. RULES    — the function update(). Three rules. Rewrite them.
-    3. TWISTS   — ideas at the bottom of the script.
-  Everything else (sensors, camera, audio, drawing) is plumbing. Leave it.
-
-  HOW TO RUN
-  Needs HTTPS (camera + sensors). Put this file and the assets folder on any static host
-  (GitHub Pages, Netlify Drop, Glitch), open the link on a phone, tap START.
-  On a laptop it runs in a test mode: drag or use ← → to turn.
-
-  No external libraries. The statue uses two image assets, with a code-drawn
-  fallback. Footsteps and heartbeat are synthesized; the catch scream is a
-  sound asset. Replace the statue with your own design.
--->
 <style>
   :root {
     --bg: #0b0b0d;
@@ -56,6 +31,7 @@
   #hud .distance.danger { color: var(--danger); }
   #hud .debug { color: var(--dim); font-size: 12px; text-align: right; white-space: pre; }
   #hud .debug[hidden] { display: none; }
+  #hud[hidden] { display: none; }
 
   .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px;
              padding: max(16px, env(safe-area-inset-left, 0px)); text-align: center; background: rgba(11,11,13,.86); }
@@ -65,9 +41,9 @@
   .overlay button { font: inherit; font-size: 18px; letter-spacing: .18em; text-transform: uppercase; padding: 16px 36px;
                     background: var(--accent); color: #141210; border: 0; border-radius: 2px; cursor: pointer; }
   .overlay button:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
-  .opts { display: flex; flex-wrap: wrap; gap: 14px 22px; justify-content: center; color: var(--dim); font-size: 13px; }
-  .opts label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
-  #caught h1 { color: var(--danger); }
+  #start { cursor: pointer; }
+  #start #btnStart { font-size: inherit; font-weight: inherit; letter-spacing: inherit; text-transform: none;
+                     padding: 16px; background: none; color: var(--fg); }
   #caught .big { font-size: 64px; font-family: var(--font-title); }
   .note { font-size: 12px; color: var(--dim); position: fixed; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); left: 0; right: 0; text-align: center; pointer-events: none; }
   @media (prefers-reduced-motion: reduce) { #vignette { transition: none; } }
@@ -80,22 +56,13 @@
 <div id="vignette"></div>
 <div id="flash"></div>
 
-<div id="hud">
+<div id="hud" hidden>
   <div><div class="time" id="time">0.0</div><div class="distance" id="distance">NEAREST 10.0 m</div></div>
   <div class="debug" id="debug" hidden></div>
 </div>
 
 <div class="overlay" id="start">
-  <h1>Don't Blink</h1>
-  <p id="introRules">Two angels are in the room. Each moves when you're not looking. Turn to freeze them.</p>
-  <p id="introGoal">You stay in one place. Survive 60 seconds without letting either angel get within 1.4 m.</p>
-  <div class="opts">
-    <label><input type="checkbox" id="optCartoon"> cartoon mode</label>
-    <label><input type="checkbox" id="optFlash" checked> flash on catch</label>
-    <label><input type="checkbox" id="optDebug"> debug</label>
-  </div>
-  <button id="btnStart">Start</button>
-  <p id="startNote"></p>
+  <h1><button id="btnStart" type="button" aria-label="Start Don't Blink">Don't Blink</button></h1>
 </div>
 
 <div class="overlay" id="caught" hidden>
@@ -227,9 +194,6 @@ const angels = Array.from({ length: Math.max(1, Math.floor(PARAMS.angelCount)) }
   name: `angel ${index + 1}`, x: 0, y: 0, bearing: 0, startDistance: 0, distance: 0,
   outTime: 0, moving: false, inView: false, stepTimer: 0,
 }));
-const angelIntroSubject = angels.length === 1 ? 'One angel is' : `${angels.length} angels are`;
-$('introRules').textContent = `${angelIntroSubject} in the room. Each moves when you're not looking. Turn to freeze them.`;
-$('introGoal').textContent = `You stay in one place. Survive ${PARAMS.roundLength} seconds without letting an angel get within ${PARAMS.catchDistance} m.`;
 function refreshAngel(angel) {
   const dx = angel.x - player.x, dy = angel.y - player.y;
   angel.distance = Math.hypot(dx, dy);
@@ -263,9 +227,8 @@ function spawn() {
 }
 
 async function startGame() {
-  game.cartoon = $('optCartoon').checked;
-  game.flash = $('optFlash').checked;
-  game.debug = $('optDebug').checked;
+  if (game.state === 'starting' || game.state === 'playing') return;
+  game.state = 'starting';
   debugEl.hidden = !game.debug;
   noteEl.textContent = '';
 
@@ -274,7 +237,7 @@ async function startGame() {
   await setupCamera();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch (_) {}
 
-  $('start').hidden = true; $('caught').hidden = true;
+  $('start').hidden = true; $('caught').hidden = true; $('hud').hidden = false;
   game.state = 'playing'; game.t = 0; game.last = performance.now();
   aim.startYaw = aim.haveSensor ? aim.yaw : 0;
   spawn();
@@ -543,11 +506,8 @@ function onSurvived() {
   $('caughtText').textContent = `${PARAMS.roundLength} seconds. The closest angel was ${nearest.distance.toFixed(1)} m away.`;
   $('caught').hidden = false;
 }
-$('btnStart').addEventListener('click', startGame);
+$('start').addEventListener('click', startGame);
 $('btnRetry').addEventListener('click', () => { heartTimer = 0; startGame(); });
-
-if (!window.isSecureContext) $('startNote').textContent = 'Camera and sensors need HTTPS. Host this file, then open the link on your phone.';
-else if (!('DeviceOrientationEvent' in window)) $('startNote').textContent = 'No motion sensors here — test mode: drag or use ← → to turn.';
 </script>
 </body>
 </html>
