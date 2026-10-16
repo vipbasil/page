@@ -10,7 +10,7 @@
   UTM · DJMI Master · practical session 1
 
   WHAT THIS FILE IS
-  A one-file phone game. Camera feed as background, gyroscope as aim.
+  A small phone game. Camera feed as background, gyroscope as aim.
   Something is in the room with you at a random direction and ~10 m away.
   While it is in your camera frame it is a statue. When it is out of frame it
   walks toward you. Reach 0 m and it gets you. Survive ROUND_LENGTH seconds.
@@ -22,12 +22,12 @@
   Everything else (sensors, camera, audio, drawing) is plumbing. Leave it.
 
   HOW TO RUN
-  Needs HTTPS (camera + sensors). Put this file on any static host
+  Needs HTTPS (camera + sensors). Put this file and the assets folder on any static host
   (GitHub Pages, Netlify Drop, Glitch), open the link on a phone, tap START.
   On a laptop it runs in a test mode: drag the mouse or use ← → to turn.
 
-  No external libraries. No assets. The statue is drawn in code, the sounds
-  are synthesized. Replace the statue with your own design — it's yours.
+  No external libraries. The statue uses two image assets, with a code-drawn
+  fallback. Sounds are synthesized. Replace the statue with your own design.
 -->
 <style>
   :root {
@@ -362,6 +362,10 @@ function drawStatue(c, screaming) {
   g.globalAlpha = 1;
 }
 drawStatue(sprite, false); drawStatue(spriteScream, true);
+const angelStillImage = new Image();
+angelStillImage.src = 'assets/angel-still.webp';
+const angelAttackImage = new Image();
+angelAttackImage.src = 'assets/angel-attack.webp';
 
 /* ---- loop ---- */
 let stepTimer = 0, heartTimer = 0;
@@ -403,9 +407,10 @@ function loop(now) {
     const sx = W / 2 + (dx / PARAMS.fov) * W;
     const sy = H / 2 + (aim.pitch / 60) * H;
     const h = Math.min(H * 2.5, H * 1.7 / Math.max(angel.distance, 0.4));
-    const w = h / 2;
+    const art = angelStillImage.complete && angelStillImage.naturalWidth ? angelStillImage : sprite;
+    const w = h * art.width / art.height;
     ctx.globalAlpha = 0.92;
-    ctx.drawImage(sprite, sx - w / 2, sy - h * 0.55, w, h);
+    ctx.drawImage(art, sx - w / 2, sy - h * 0.55, w, h);
     ctx.globalAlpha = 1;
   }
   vignette.style.opacity = Math.pow(prox, 1.6).toFixed(3);
@@ -422,8 +427,9 @@ function onCaught() {
   try { if (navigator.vibrate) navigator.vibrate([200, 60, 400]); } catch (_) {}
   // the face, full screen
   ctx.clearRect(0, 0, W, H);
-  const h = H * 1.3, w = h / 2;
-  ctx.drawImage(spriteScream, W / 2 - w / 2, H / 2 - h * 0.45, w, h);
+  const art = angelAttackImage.complete && angelAttackImage.naturalWidth ? angelAttackImage : spriteScream;
+  const h = H * 1.3, w = h * art.width / art.height;
+  ctx.drawImage(art, W / 2 - w / 2, H / 2 - h * 0.45, w, h);
   vignette.style.opacity = 1;
   if (game.flash) { flash.style.opacity = 1; setTimeout(() => flash.style.opacity = 0, 90); }
   setTimeout(() => {
