@@ -87,8 +87,8 @@
 
 <div class="overlay" id="start">
   <h1>Don't Blink</h1>
-  <p>Two angels are in the room. Each moves when you're not looking. Turn to freeze them.</p>
-  <p>You stay in one place. Survive 60 seconds without letting either angel get within 1.4 m.</p>
+  <p id="introRules">Two angels are in the room. Each moves when you're not looking. Turn to freeze them.</p>
+  <p id="introGoal">You stay in one place. Survive 60 seconds without letting either angel get within 1.4 m.</p>
   <div class="opts">
     <label><input type="checkbox" id="optCartoon"> cartoon mode</label>
     <label><input type="checkbox" id="optFlash" checked> flash on catch</label>
@@ -133,18 +133,18 @@ const PARAMS = {
    ========================================================================= */
 function update(dt, inView, s) {
   refreshAngel(s);
-  if (s.distance <= PARAMS.catchDistance) { onCaught(); return; }
+  if (s.distance <= PARAMS.catchDistance) return true;
 
   // RULE 1 — In frame → frozen.
   if (inView) {
     s.outTime = 0;
     s.moving = false;
-    return;
+    return false;
   }
 
   // RULE 2 — Out of frame → it approaches (after a short grace period).
   s.outTime += dt;
-  if (s.outTime < PARAMS.gracePeriod) { s.moving = false; return; }
+  if (s.outTime < PARAMS.gracePeriod) { s.moving = false; return false; }
   s.moving = true;
   const step = Math.min(PARAMS.speed * dt, s.distance - PARAMS.catchDistance);
   s.x += (player.x - s.x) / s.distance * step;
@@ -154,8 +154,9 @@ function update(dt, inView, s) {
   // RULE 3 — Within reach → caught. Allow for floating-point rounding.
   if (s.distance <= PARAMS.catchDistance + 0.001) {
     s.distance = PARAMS.catchDistance;
-    onCaught();
+    return true;
   }
+  return false;
 }
 
 /* =========================================================================
@@ -224,10 +225,16 @@ const angels = [0, 1].map(index => ({
   name: `angel ${index + 1}`, x: 0, y: 0, bearing: 0, startDistance: 0, distance: 0,
   outTime: 0, moving: false, inView: false, stepTimer: 0,
 }));
+const angelCount = angels.length === 1 ? 'One angel is' : `${angels.length} angels are`;
+$('introRules').textContent = `${angelCount} in the room. Each moves when you're not looking. Turn to freeze them.`;
+$('introGoal').textContent = `You stay in one place. Survive ${PARAMS.roundLength} seconds without letting an angel get within ${PARAMS.catchDistance} m.`;
 function refreshAngel(angel) {
   const dx = angel.x - player.x, dy = angel.y - player.y;
   angel.distance = Math.hypot(dx, dy);
   angel.bearing = deg(Math.atan2(dx, dy));
+}
+function nearestAngel() {
+  return angels.reduce((a, b) => a.distance <= b.distance ? a : b);
 }
 function spawn() {
   player.x = 0; player.y = 0;
@@ -252,9 +259,9 @@ async function startGame() {
   debugEl.hidden = !game.debug;
   noteEl.textContent = '';
 
+  setupAudio();
   await setupSensors();
   await setupCamera();
-  setupAudio();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch (_) {}
 
   $('start').hidden = true; $('caught').hidden = true;
@@ -262,7 +269,7 @@ async function startGame() {
   aim.startYaw = aim.haveSensor ? aim.yaw : 0;
   spawn();
   timeEl.textContent = '0.0';
-  distanceEl.textContent = `NEAREST ${PARAMS.startDistance.toFixed(1)} m`;
+  distanceEl.textContent = `NEAREST ${nearestAngel().distance.toFixed(1)} m`;
   distanceEl.classList.remove('danger');
   if (!noteEl.textContent) noteEl.textContent = 'Turn to keep the angels in view.';
   requestAnimationFrame(loop);
@@ -416,28 +423,31 @@ angelStillImage.src = 'assets/angel-still.webp';
 const angelAttackImage = new Image();
 angelAttackImage.src = 'assets/angel-attack.webp';
 
-/* ---- loop ---- */
-let heartTimer = 0;
-function loop(now) {
-  if (game.state !== 'playing') return;
-  const dt = Math.min(0.1, (now - game.last) / 1000); game.last = now; game.t += dt;
-  // Each angel has its own frame check and grace timer.
+/* ---- per-frame game rules ---- */
+function updateVisibility(angel) {
   const half = PARAMS.fov / 2;
   const pitchOk = !PARAMS.requirePitch || Math.abs(aim.pitch) < 35;
-  for (const angel of angels) {
-    const dx = angleDiff(angel.bearing, aim.yaw);
-    if (angel.inView) { if (Math.abs(dx) > half + PARAMS.hysteresis || !pitchOk) angel.inView = false; }
-    else { if (Math.abs(dx) < half && pitchOk) angel.inView = true; }
-    update(dt, angel.inView, angel);
-    if (game.state !== 'playing') return;
+  const dx = angleDiff(angel.bearing, aim.yaw);
+  if (angel.inView) {
+    if (Math.abs(dx) > half + PARAMS.hysteresis || !pitchOk) angel.inView = false;
+  } else if (Math.abs(dx) < half && pitchOk) {
+    angel.inView = true;
   }
+}
+function updateGame(dt) {
+  game.t += dt;
+  for (const angel of angels) {
+    updateVisibility(angel);
+    if (update(dt, angel.inView, angel)) { onCaught(); return false; }
+  }
+  if (game.t >= PARAMS.roundLength) { onSurvived(); return false; }
+  return true;
+}
 
-  // win
-  if (game.t >= PARAMS.roundLength) { onSurvived(); return; }
-
+/* ---- per-frame sound ---- */
+let heartTimer = 0;
+function updateSound(dt, nearest) {
   // Independent footsteps reveal which side is moving; the nearest sets the heartbeat.
-  const nearest = angels.reduce((a, b) => a.distance <= b.distance ? a : b);
-  const prox = 1 - Math.min(1, nearest.distance / nearest.startDistance);
   for (const angel of angels) {
     if (angel.moving) {
       angel.stepTimer -= dt;
@@ -454,8 +464,11 @@ function loop(now) {
     heartTimer -= dt;
     if (heartTimer <= 0) { playHeart(); const bpm = 60 + 100 * (1 - nearest.distance / PARAMS.heartbeatFrom); heartTimer = 60 / bpm; }
   }
+}
 
-  // draw
+/* ---- per-frame drawing and HUD ---- */
+function drawScene(nearest) {
+  const half = PARAMS.fov / 2;
   ctx.clearRect(0, 0, W, H);
   for (const angel of [...angels].sort((a, b) => b.distance - a.distance)) {
     const dx = angleDiff(angel.bearing, aim.yaw);
@@ -470,14 +483,28 @@ function loop(now) {
       ctx.globalAlpha = 1;
     }
   }
+  const prox = 1 - Math.min(1, nearest.distance / nearest.startDistance);
   vignette.style.opacity = Math.pow(prox, 1.6).toFixed(3);
+}
+function updateHud(nearest) {
   timeEl.textContent = game.t.toFixed(1);
   distanceEl.textContent = `NEAREST ${nearest.distance.toFixed(1)} m`;
   distanceEl.classList.toggle('danger', nearest.distance < PARAMS.catchDistance + 1.5);
   if (game.debug) debugEl.textContent = `yaw ${aim.yaw.toFixed(0)}°\n` + angels.map(angel =>
     `${angel.name}: ${angel.distance.toFixed(2)} m  dx ${angleDiff(angel.bearing, aim.yaw).toFixed(0)}°  ${angel.inView ? 'IN VIEW' : 'out'}${angel.moving ? '  MOVING' : ''}`
   ).join('\n') + `\nplayer ${player.x.toFixed(1)}, ${player.y.toFixed(1)}`;
+}
 
+/* ---- loop ---- */
+function loop(now) {
+  if (game.state !== 'playing') return;
+  const dt = Math.min(0.1, (now - game.last) / 1000);
+  game.last = now;
+  if (!updateGame(dt)) return;
+  const nearest = nearestAngel();
+  updateSound(dt, nearest);
+  drawScene(nearest);
+  updateHud(nearest);
   requestAnimationFrame(loop);
 }
 
@@ -502,7 +529,7 @@ function onCaught() {
 function onSurvived() {
   game.state = 'won';
   $('caughtTitle').textContent = 'You survived.';
-  const nearest = angels.reduce((a, b) => a.distance <= b.distance ? a : b);
+  const nearest = nearestAngel();
   $('caughtText').textContent = `${PARAMS.roundLength} seconds. The closest angel was ${nearest.distance.toFixed(1)} m away.`;
   $('caught').hidden = false;
 }
