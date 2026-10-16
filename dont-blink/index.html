@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b0b0d">
+<title>Don't Blink</title>
+<!--
+  DON'T BLINK  —  P1 template, "Scan to Play" / S.O.001 Realitatea extinsă (XR)
+  UTM · DJMI Master · practical session 1
+
+  WHAT THIS FILE IS
+  A one-file phone game. Camera feed as background, gyroscope as aim.
+  Something is in the room with you at a random direction and ~10 m away.
+  While it is in your camera frame it is a statue. When it is out of frame it
+  walks toward you. Reach 0 m and it gets you. Survive ROUND_LENGTH seconds.
+
+  WHAT STUDENTS TOUCH
+    1. PARAMS   — tuning knobs. Change one, play, write down what it did.
+    2. RULES    — the function update(). Three rules. Rewrite them.
+    3. TWISTS   — ideas at the bottom of the script.
+  Everything else (sensors, camera, audio, drawing) is plumbing. Leave it.
+
+  HOW TO RUN
+  Needs HTTPS (camera + sensors). Put this file on any static host
+  (GitHub Pages, Netlify Drop, Glitch), open the link on a phone, tap START.
+  On a laptop it runs in a test mode: drag the mouse or use ← → to turn.
+
+  No external libraries. No assets. The statue is drawn in code, the sounds
+  are synthesized. Replace the statue with your own design — it's yours.
+-->
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --fg: #e8e4dc;
+    --dim: #8e8a82;
+    --accent: #c9a24a;     /* old brass */
+    --danger: #b3261e;
+    --font-ui: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --font-title: Georgia, "Times New Roman", serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font-family: var(--font-ui); }
+  #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #111; filter: saturate(.6) contrast(1.1); }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 35%, #000 100%); opacity: 0; transition: opacity .15s linear; }
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+
+  #hud { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; align-items: flex-start;
+         padding: calc(env(safe-area-inset-top, 0px) + 12px) max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+         pointer-events: none; font-size: 14px; letter-spacing: .04em; text-shadow: 0 1px 2px #000; font-variant-numeric: tabular-nums; }
+  #hud .time { font-size: 28px; font-family: var(--font-title); color: var(--fg); }
+  #hud .debug { color: var(--dim); font-size: 12px; text-align: right; white-space: pre; }
+  #hud .debug[hidden] { display: none; }
+
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px;
+             padding: max(16px, env(safe-area-inset-left, 0px)); text-align: center; background: rgba(11,11,13,.86); }
+  .overlay[hidden] { display: none; }
+  .overlay h1 { font-family: var(--font-title); font-weight: normal; font-size: clamp(40px, 12vw, 72px); margin: 0; letter-spacing: .02em; text-wrap: balance; }
+  .overlay p { max-width: 34ch; color: var(--dim); margin: 0; line-height: 1.5; font-size: 15px; }
+  .overlay button { font: inherit; font-size: 18px; letter-spacing: .18em; text-transform: uppercase; padding: 16px 36px;
+                    background: var(--accent); color: #141210; border: 0; border-radius: 2px; cursor: pointer; }
+  .overlay button:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 14px 22px; justify-content: center; color: var(--dim); font-size: 13px; }
+  .opts label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  #caught h1 { color: var(--danger); }
+  #caught .big { font-size: 64px; font-family: var(--font-title); }
+  .note { font-size: 12px; color: var(--dim); position: fixed; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); left: 0; right: 0; text-align: center; pointer-events: none; }
+  @media (prefers-reduced-motion: reduce) { #vignette { transition: none; } }
+</style>
+</head>
+<body>
+
+<video id="cam" autoplay playsinline muted></video>
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
+<div id="flash"></div>
+
+<div id="hud">
+  <div class="time" id="time">0.0</div>
+  <div class="debug" id="debug" hidden></div>
+</div>
+
+<div class="overlay" id="start">
+  <h1>Don't Blink</h1>
+  <p>Something is in the room. It only moves when you're not looking at it. Find it with the camera. Keep it in frame. Survive.</p>
+  <div class="opts">
+    <label><input type="checkbox" id="optCartoon"> cartoon mode</label>
+    <label><input type="checkbox" id="optFlash" checked> flash on catch</label>
+    <label><input type="checkbox" id="optDebug"> debug</label>
+  </div>
+  <button id="btnStart">Start</button>
+  <p id="startNote"></p>
+</div>
+
+<div class="overlay" id="caught" hidden>
+  <div class="big" id="caughtTitle">It got you.</div>
+  <p id="caughtText">You lasted 0 seconds.</p>
+  <button id="btnRetry">Again</button>
+</div>
+
+<div class="note" id="note"></div>
+
+<script>
+'use strict';
+
+/* =========================================================================
+   1. PARAMS — the tuning knobs. Change ONE, play, write down what changed.
+   ========================================================================= */
+const PARAMS = {
+  startDistance: 10,     // metres. Where it begins. 8–12 feels right.
+  speed:         1.0,    // metres per second while you are not looking.
+  gracePeriod:   0.5,    // seconds out of frame before it starts moving.
+                         //   0 = unfair (tracking flicker), 1.5 = too kind.
+  catchDistance: 0.4,    // metres. Closer than this and it has you.
+  roundLength:   60,     // seconds to survive.
+  fov:           50,     // degrees. "I can see it" = within ±fov/2 of where you aim.
+  hysteresis:    4,      // degrees. Enters frame at fov/2, leaves at fov/2+hysteresis.
+  requirePitch:  false,  // true = you must also look roughly at the horizon (±35°).
+  heartbeatFrom: 3.5,    // metres. Heartbeat starts here.
+  spawnMinAngle: 70,     // degrees. It never spawns closer than this to where you look at start.
+};
+
+/* =========================================================================
+   2. RULES — this is the game. Three rules. Rewrite them.
+   s = { distance, outTime, moving }   dt = seconds since last frame
+   ========================================================================= */
+function update(dt, inView, s) {
+
+  // RULE 1 — In frame → frozen.
+  if (inView) {
+    s.outTime = 0;
+    s.moving = false;
+    return;
+  }
+
+  // RULE 2 — Out of frame → it approaches (after a short grace period).
+  s.outTime += dt;
+  if (s.outTime < PARAMS.gracePeriod) { s.moving = false; return; }
+  s.moving = true;
+  s.distance -= PARAMS.speed * dt;
+
+  // RULE 3 — Distance zero → caught.
+  if (s.distance <= PARAMS.catchDistance) {
+    s.distance = PARAMS.catchDistance;
+    onCaught();
+  }
+}
+
+/* =========================================================================
+   3. TWISTS — pick one, implement it in update() / PARAMS, test on a victim.
+   - Two angels: make `angels` an array; you can't watch both. Sound becomes the game.
+   - Actually don't blink: front camera + face landmarks; each blink = one step.
+   - Cartoon mode is already a toggle. Why does the fear vanish but the fun stay?
+   - Sound only: set DRAW_ANGEL = false. Now it's Marco Polo (→ P2).
+   - Safe zone: looking at a marker on the wall for 3 s heals one metre.
+   ========================================================================= */
+let DRAW_ANGEL = true;
+
+/* ======================= plumbing below — leave it ======================= */
+
+const $ = id => document.getElementById(id);
+const cam = $('cam'), canvas = $('scene'), ctx = canvas.getContext('2d');
+const vignette = $('vignette'), flash = $('flash');
+const timeEl = $('time'), debugEl = $('debug'), noteEl = $('note');
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+/* ---- orientation: where is the camera pointing? ---- */
+const aim = { yaw: 0, pitch: 0, haveSensor: false, startYaw: null };
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+function angleDiff(a, b) { let d = (a - b) % 360; if (d > 180) d -= 360; if (d < -180) d += 360; return d; }
+
+function onOrientation(e) {
+  if (e.alpha == null || e.beta == null || e.gamma == null) return;
+  const a = rad(e.alpha), b = rad(e.beta), g = rad(e.gamma);
+  // camera looks along device -Z; rotate by R = Rz(a)·Rx(b)·Ry(g)
+  const sg = Math.sin(g), cg = Math.cos(g), sb = Math.sin(b), cb = Math.cos(b), sa = Math.sin(a), ca = Math.cos(a);
+  const x = -ca * sg - sa * sb * cg;
+  const y = -sa * sg + ca * sb * cg;
+  const z = -cb * cg;
+  // screen rotation (landscape) — compensate roughly
+  let yaw = deg(Math.atan2(x, y));
+  const so = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  yaw += so;
+  aim.yaw = yaw;
+  aim.pitch = deg(Math.asin(Math.max(-1, Math.min(1, z))));
+  aim.haveSensor = true;
+  if (aim.startYaw === null && game.state === 'playing') aim.startYaw = yaw;
+}
+
+/* desktop test mode: drag or arrow keys */
+let dragging = false, lastX = 0;
+canvas.addEventListener('pointerdown', e => { if (!aim.haveSensor) { dragging = true; lastX = e.clientX; } });
+addEventListener('pointerup', () => dragging = false);
+addEventListener('pointermove', e => { if (dragging && !aim.haveSensor) { aim.yaw += (e.clientX - lastX) * 0.4; lastX = e.clientX; } });
+addEventListener('keydown', e => {
+  if (aim.haveSensor) return;
+  if (e.key === 'ArrowLeft') aim.yaw -= 6;
+  if (e.key === 'ArrowRight') aim.yaw += 6;
+});
+
+/* ---- game state ---- */
+const game = { state: 'idle', t: 0, last: 0, inView: false, cartoon: false, flash: true, debug: false };
+const angel = { bearing: 0, distance: PARAMS.startDistance, outTime: 0, moving: false };
+
+function spawn() {
+  const base = aim.startYaw ?? aim.yaw;
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const off = PARAMS.spawnMinAngle + Math.random() * (180 - PARAMS.spawnMinAngle);
+  angel.bearing = base + side * off;
+  angel.distance = PARAMS.startDistance;
+  angel.outTime = 0; angel.moving = false;
+}
+
+async function startGame() {
+  game.cartoon = $('optCartoon').checked;
+  game.flash = $('optFlash').checked;
+  game.debug = $('optDebug').checked;
+  debugEl.hidden = !game.debug;
+
+  await setupSensors();
+  await setupCamera();
+  setupAudio();
+  try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch (_) {}
+
+  $('start').hidden = true; $('caught').hidden = true;
+  game.state = 'playing'; game.t = 0; game.last = performance.now();
+  aim.startYaw = aim.haveSensor ? aim.yaw : 0;
+  spawn();
+  requestAnimationFrame(loop);
+}
+
+async function setupSensors() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission();   // iOS: must be inside the tap
+      if (r !== 'granted') { noteEl.textContent = 'No motion permission — test mode: drag to turn.'; return; }
+    }
+    addEventListener('deviceorientation', onOrientation, true);
+  } catch (_) { noteEl.textContent = 'Motion sensors unavailable — test mode: drag to turn.'; }
+}
+
+async function setupCamera() {
+  if (cam.srcObject) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    cam.srcObject = stream;
+  } catch (_) {
+    noteEl.textContent = (noteEl.textContent + ' No camera — playing in the dark.').trim();
+  }
+}
+
+/* ---- audio: all synthesized, no files ---- */
+let AC = null, master = null, panner = null, stepGain = null;
+function setupAudio() {
+  if (AC) { AC.resume(); return; }
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = 0.9; master.connect(AC.destination);
+  panner = AC.createStereoPanner ? AC.createStereoPanner() : null;
+  stepGain = AC.createGain(); stepGain.gain.value = 0.6;
+  if (panner) { stepGain.connect(panner); panner.connect(master); } else { stepGain.connect(master); }
+}
+function noiseBuffer(sec) {
+  const b = AC.createBuffer(1, AC.sampleRate * sec, AC.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+}
+function playStep(gainMul) {
+  if (!AC) return;
+  const t = AC.currentTime;
+  if (game.cartoon) {           // "boing"
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(660, t + 0.12);
+    g.gain.setValueAtTime(0.5 * gainMul, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    o.connect(g); g.connect(stepGain); o.start(t); o.stop(t + 0.2);
+    return;
+  }
+  const src = AC.createBufferSource(); src.buffer = noiseBuffer(0.08);
+  const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+  const g = AC.createGain(); g.gain.setValueAtTime(0.9 * gainMul, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+  src.connect(lp); lp.connect(g); g.connect(stepGain); src.start(t);
+  const o = AC.createOscillator(), og = AC.createGain();     // the thud
+  o.type = 'sine'; o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+  og.gain.setValueAtTime(0.8 * gainMul, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  o.connect(og); og.connect(stepGain); o.start(t); o.stop(t + 0.15);
+}
+function playHeart() {
+  if (!AC) return;
+  const t = AC.currentTime;
+  for (const [dt, f] of [[0, 55], [0.14, 48]]) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(0.7, t + dt + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.12);
+    o.connect(g); g.connect(master); o.start(t + dt); o.stop(t + dt + 0.14);
+  }
+}
+function playScream() {
+  if (!AC) return;
+  const t = AC.currentTime;
+  if (game.cartoon) {           // honk honk
+    for (const dt of [0, 0.22]) {
+      const o = AC.createOscillator(), g = AC.createGain();
+      o.type = 'square'; o.frequency.value = 180;
+      g.gain.setValueAtTime(0.4, t + dt); g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.18);
+      o.connect(g); g.connect(master); o.start(t + dt); o.stop(t + dt + 0.2);
+    }
+    return;
+  }
+  const src = AC.createBufferSource(); src.buffer = noiseBuffer(1.2);
+  const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 2;
+  bp.frequency.setValueAtTime(900, t); bp.frequency.exponentialRampToValueAtTime(2600, t + 0.5); bp.frequency.exponentialRampToValueAtTime(600, t + 1.2);
+  const g = AC.createGain(); g.gain.setValueAtTime(1.0, t); g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+  src.connect(bp); bp.connect(g); g.connect(master); src.start(t);
+  const o = AC.createOscillator(), og = AC.createGain();
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(400, t); o.frequency.exponentialRampToValueAtTime(1800, t + 0.3); o.frequency.exponentialRampToValueAtTime(300, t + 1.1);
+  og.gain.setValueAtTime(0.5, t); og.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+  o.connect(og); og.connect(master); o.start(t); o.stop(t + 1.2);
+}
+
+/* ---- the statue: drawn once, in code. Replace with your own. ---- */
+const sprite = document.createElement('canvas'); sprite.width = 256; sprite.height = 512;
+const spriteScream = document.createElement('canvas'); spriteScream.width = 256; spriteScream.height = 512;
+function drawStatue(c, screaming) {
+  const g = c.getContext('2d'); g.clearRect(0, 0, 256, 512);
+  const stone = g.createLinearGradient(0, 0, 0, 512); stone.addColorStop(0, '#9a978f'); stone.addColorStop(1, '#4a4844');
+  g.fillStyle = stone;
+  // wings
+  g.beginPath(); g.moveTo(128, 150); g.quadraticCurveTo(10, 120, 20, 330); g.quadraticCurveTo(60, 260, 128, 300); g.fill();
+  g.beginPath(); g.moveTo(128, 150); g.quadraticCurveTo(246, 120, 236, 330); g.quadraticCurveTo(196, 260, 128, 300); g.fill();
+  // robe
+  g.beginPath(); g.moveTo(90, 170); g.quadraticCurveTo(40, 350, 48, 500); g.lineTo(208, 500); g.quadraticCurveTo(216, 350, 166, 170); g.closePath(); g.fill();
+  // head
+  g.beginPath(); g.ellipse(128, 130, 44, 52, 0, 0, Math.PI * 2); g.fill();
+  // hair
+  g.fillStyle = '#6e6b65'; g.beginPath(); g.ellipse(128, 100, 48, 34, 0, Math.PI, Math.PI * 2); g.fill();
+  if (!screaming) {
+    // hands over face
+    g.fillStyle = '#8c8982';
+    g.beginPath(); g.ellipse(108, 140, 20, 30, -0.3, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(148, 140, 20, 30, 0.3, 0, Math.PI * 2); g.fill();
+  } else {
+    // face revealed: hollow eyes, open mouth, bared hands
+    g.fillStyle = '#111'; g.beginPath(); g.ellipse(112, 122, 9, 12, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(144, 122, 9, 12, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.moveTo(104, 150); g.lineTo(152, 150); g.lineTo(140, 176); g.lineTo(116, 176); g.closePath(); g.fill();
+    g.fillStyle = '#8c8982';
+    g.beginPath(); g.ellipse(60, 230, 18, 26, 0.6, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(196, 230, 18, 26, -0.6, 0, Math.PI * 2); g.fill();
+  }
+  // grain
+  g.globalAlpha = 0.18;
+  for (let i = 0; i < 1400; i++) { g.fillStyle = Math.random() < 0.5 ? '#000' : '#fff'; g.fillRect(Math.random() * 256, Math.random() * 512, 2, 2); }
+  g.globalAlpha = 1;
+}
+drawStatue(sprite, false); drawStatue(spriteScream, true);
+
+/* ---- loop ---- */
+let stepTimer = 0, heartTimer = 0;
+function loop(now) {
+  if (game.state !== 'playing') return;
+  const dt = Math.min(0.1, (now - game.last) / 1000); game.last = now; game.t += dt;
+
+  // is it in frame? (hysteresis so it doesn't flicker at the edge)
+  const dx = angleDiff(angel.bearing, aim.yaw);
+  const half = PARAMS.fov / 2;
+  const pitchOk = !PARAMS.requirePitch || Math.abs(aim.pitch) < 35;
+  if (game.inView) { if (Math.abs(dx) > half + PARAMS.hysteresis || !pitchOk) game.inView = false; }
+  else { if (Math.abs(dx) < half && pitchOk) game.inView = true; }
+
+  update(dt, game.inView, angel);
+  if (game.state !== 'playing') return;
+
+  // win
+  if (game.t >= PARAMS.roundLength) { onSurvived(); return; }
+
+  // sound: footsteps while it moves, heartbeat when close
+  const prox = 1 - Math.min(1, angel.distance / PARAMS.startDistance);
+  if (angel.moving) {
+    stepTimer -= dt;
+    if (stepTimer <= 0) {
+      if (panner) panner.pan.value = Math.max(-1, Math.min(1, Math.sin(rad(dx))));
+      playStep(0.25 + 0.75 * prox);
+      stepTimer = 0.28 + angel.distance * 0.06;
+    }
+  }
+  if (angel.distance < PARAMS.heartbeatFrom) {
+    heartTimer -= dt;
+    if (heartTimer <= 0) { playHeart(); const bpm = 60 + 100 * (1 - angel.distance / PARAMS.heartbeatFrom); heartTimer = 60 / bpm; }
+  }
+
+  // draw
+  ctx.clearRect(0, 0, W, H);
+  if (DRAW_ANGEL && Math.abs(dx) < half + 25) {
+    const sx = W / 2 + (dx / PARAMS.fov) * W;
+    const sy = H / 2 + (aim.pitch / 60) * H;
+    const h = Math.min(H * 2.5, H * 1.7 / Math.max(angel.distance, 0.4));
+    const w = h / 2;
+    ctx.globalAlpha = 0.92;
+    ctx.drawImage(sprite, sx - w / 2, sy - h * 0.55, w, h);
+    ctx.globalAlpha = 1;
+  }
+  vignette.style.opacity = Math.pow(prox, 1.6).toFixed(3);
+  timeEl.textContent = game.t.toFixed(1);
+  if (game.debug) debugEl.textContent = `dist ${angel.distance.toFixed(2)} m\nyaw ${aim.yaw.toFixed(0)}°  bearing ${angel.bearing.toFixed(0)}°\ndx ${dx.toFixed(0)}°  ${game.inView ? 'IN VIEW' : 'out'}${angel.moving ? '  MOVING' : ''}`;
+
+  requestAnimationFrame(loop);
+}
+
+function onCaught() {
+  if (game.state !== 'playing') return;
+  game.state = 'caught';
+  playScream();
+  try { if (navigator.vibrate) navigator.vibrate([200, 60, 400]); } catch (_) {}
+  // the face, full screen
+  ctx.clearRect(0, 0, W, H);
+  const h = H * 1.3, w = h / 2;
+  ctx.drawImage(spriteScream, W / 2 - w / 2, H / 2 - h * 0.45, w, h);
+  vignette.style.opacity = 1;
+  if (game.flash) { flash.style.opacity = 1; setTimeout(() => flash.style.opacity = 0, 90); }
+  setTimeout(() => {
+    $('caughtTitle').textContent = game.cartoon ? 'Boop.' : 'It got you.';
+    $('caughtText').textContent = `You lasted ${game.t.toFixed(1)} seconds.`;
+    $('caught').hidden = false;
+  }, 900);
+}
+function onSurvived() {
+  game.state = 'won';
+  $('caughtTitle').textContent = 'You survived.';
+  $('caughtText').textContent = `${PARAMS.roundLength} seconds. It was ${angel.distance.toFixed(1)} m away.`;
+  $('caught').hidden = false;
+}
+
+$('btnStart').addEventListener('click', startGame);
+$('btnRetry').addEventListener('click', () => { game.inView = false; stepTimer = 0; heartTimer = 0; startGame(); });
+
+if (!window.isSecureContext) $('startNote').textContent = 'Camera and sensors need HTTPS. Host this file, then open the link on your phone.';
+else if (!('DeviceOrientationEvent' in window)) $('startNote').textContent = 'No motion sensors here — test mode: drag or use ← → to turn.';
+</script>
+</body>
+</html>
