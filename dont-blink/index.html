@@ -11,7 +11,7 @@
 
   WHAT THIS FILE IS
   A small phone game. Camera feed as background, gyroscope as aim.
-  Two angels begin on opposite sides of you. Each freezes while it is in your
+  Angels begin in random directions outside your starting view. Each freezes while it is in your
   camera frame and approaches when it is out of frame. If either reaches you,
   it gets you. Survive ROUND_LENGTH seconds.
 
@@ -113,8 +113,9 @@
    1. PARAMS — the tuning knobs. Change ONE, play, write down what changed.
    ========================================================================= */
 const PARAMS = {
+  angelCount:    2,      // number of angels. Use a positive whole number.
   startDistance: 10,     // metres. Where it begins. 8–12 feels right.
-  speed:         0.3,    // metres per second while you are not looking; tuned for two angels.
+  speed:         0.3,    // metres per second while you are not looking; tune when changing angelCount.
   gracePeriod:   0.5,    // seconds out of frame before it starts moving.
                          //   0 = unfair (tracking flicker), 1.5 = too kind.
   catchDistance: 1.4,    // metres. The statue reaches you at about arm's length.
@@ -124,7 +125,8 @@ const PARAMS = {
   requirePitch:  false,  // true = you must also look roughly at the horizon (±35°).
   heartbeatFrom: 3.5,    // metres. Heartbeat starts here.
   spawnMinAngle: 75,     // degrees. Each angel begins at least this far from your starting view.
-  secondAngelExtraDistance: 2, // metres. A little more time before the second catches you.
+  spawnMinSeparation: 35, // degrees. Try to keep randomly placed angels apart.
+  extraDistancePerAngel: 2, // metres. Each additional angel begins a little farther away.
 };
 
 /* =========================================================================
@@ -161,7 +163,7 @@ function update(dt, inView, s) {
 
 /* =========================================================================
    3. TWISTS — pick one, implement it in update() / PARAMS, test on a victim.
-   - A third angel: add another state and bearing. Sound becomes the game.
+   - A third angel: raise angelCount. Sound becomes the game.
    - Actually don't blink: front camera + face landmarks; each blink = one step.
    - Cartoon mode is already a toggle. Why does the fear vanish but the fun stay?
    - Sound only: set DRAW_ANGEL = false. Now it's Marco Polo (→ P2).
@@ -221,12 +223,12 @@ addEventListener('keydown', e => {
 /* ---- game state ---- */
 const game = { state: 'idle', t: 0, last: 0, cartoon: false, flash: true, debug: false };
 const player = { x: 0, y: 0 };
-const angels = [0, 1].map(index => ({
+const angels = Array.from({ length: Math.max(1, Math.floor(PARAMS.angelCount)) }, (_, index) => ({
   name: `angel ${index + 1}`, x: 0, y: 0, bearing: 0, startDistance: 0, distance: 0,
   outTime: 0, moving: false, inView: false, stepTimer: 0,
 }));
-const angelCount = angels.length === 1 ? 'One angel is' : `${angels.length} angels are`;
-$('introRules').textContent = `${angelCount} in the room. Each moves when you're not looking. Turn to freeze them.`;
+const angelIntroSubject = angels.length === 1 ? 'One angel is' : `${angels.length} angels are`;
+$('introRules').textContent = `${angelIntroSubject} in the room. Each moves when you're not looking. Turn to freeze them.`;
 $('introGoal').textContent = `You stay in one place. Survive ${PARAMS.roundLength} seconds without letting an angel get within ${PARAMS.catchDistance} m.`;
 function refreshAngel(angel) {
   const dx = angel.x - player.x, dy = angel.y - player.y;
@@ -239,12 +241,20 @@ function nearestAngel() {
 function spawn() {
   player.x = 0; player.y = 0;
   const base = aim.startYaw ?? aim.yaw;
-  const side = Math.random() < 0.5 ? -1 : 1;
+  const minAngle = Math.max(0, Math.min(179, PARAMS.spawnMinAngle));
+  const allowedArc = 360 - 2 * minAngle;
+  const minSeparation = Math.min(PARAMS.spawnMinSeparation, allowedArc / angels.length * 0.75);
+  const slack = allowedArc - minSeparation * (angels.length - 1);
+  const offsets = Array.from({ length: angels.length }, () => Math.random() * slack).sort((a, b) => a - b);
+  const bearings = offsets.map((offset, index) => base + minAngle + offset + index * minSeparation);
+  // Shuffle the directions so angel number does not determine its side.
+  for (let i = bearings.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [bearings[i], bearings[j]] = [bearings[j], bearings[i]];
+  }
   for (const [index, angel] of angels.entries()) {
-    // Opposite sides keep both outside the starting frame and apart from each other.
-    const off = PARAMS.spawnMinAngle + Math.random() * 40;
-    const bearing = base + (index === 0 ? side : -side) * off;
-    angel.startDistance = PARAMS.startDistance + index * PARAMS.secondAngelExtraDistance;
+    const bearing = bearings[index];
+    angel.startDistance = PARAMS.startDistance + index * PARAMS.extraDistancePerAngel;
     angel.x = Math.sin(rad(bearing)) * angel.startDistance;
     angel.y = Math.cos(rad(bearing)) * angel.startDistance;
     refreshAngel(angel);
