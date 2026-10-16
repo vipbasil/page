@@ -27,7 +27,8 @@
   On a laptop it runs in a test mode: drag the mouse or use ← → to turn.
 
   No external libraries. The statue uses two image assets, with a code-drawn
-  fallback. Sounds are synthesized. Replace the statue with your own design.
+  fallback. Footsteps and heartbeat are synthesized; the catch scream is a
+  sound asset. Replace the statue with your own design.
 -->
 <style>
   :root {
@@ -260,7 +261,7 @@ async function setupCamera() {
 }
 
 /* ---- audio: all synthesized, no files ---- */
-let AC = null, master = null, panner = null, stepGain = null;
+let AC = null, master = null, panner = null, stepGain = null, screamBuffer = null;
 function setupAudio() {
   if (AC) { AC.resume(); return; }
   AC = new (window.AudioContext || window.webkitAudioContext)();
@@ -268,6 +269,11 @@ function setupAudio() {
   panner = AC.createStereoPanner ? AC.createStereoPanner() : null;
   stepGain = AC.createGain(); stepGain.gain.value = 0.6;
   if (panner) { stepGain.connect(panner); panner.connect(master); } else { stepGain.connect(master); }
+  fetch('assets/angel-scream.mp3')
+    .then(response => { if (!response.ok) throw new Error('Scream audio unavailable'); return response.arrayBuffer(); })
+    .then(data => AC.decodeAudioData(data))
+    .then(buffer => { screamBuffer = buffer; })
+    .catch(() => {}); // The synthesized scream below remains available offline.
 }
 function noiseBuffer(sec) {
   const b = AC.createBuffer(1, AC.sampleRate * sec, AC.sampleRate), d = b.getChannelData(0);
@@ -313,6 +319,14 @@ function playScream() {
       g.gain.setValueAtTime(0.4, t + dt); g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.18);
       o.connect(g); g.connect(master); o.start(t + dt); o.stop(t + dt + 0.2);
     }
+    return;
+  }
+  if (screamBuffer) {
+    const voice = AC.createBufferSource();
+    const gain = AC.createGain();
+    voice.buffer = screamBuffer;
+    gain.gain.value = 0.85;
+    voice.connect(gain); gain.connect(master); voice.start(t);
     return;
   }
   const src = AC.createBufferSource(); src.buffer = noiseBuffer(1.2);
