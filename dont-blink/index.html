@@ -11,9 +11,9 @@
 
   WHAT THIS FILE IS
   A small phone game. Camera feed as background, gyroscope as aim.
-  Something is in the room with you at a random direction and ~10 m away.
-  While it is in your camera frame it is a statue. When it is out of frame it
-  walks toward you. Reach 0 m and it gets you. Survive ROUND_LENGTH seconds.
+  Two angels begin on opposite sides of you. Each freezes while it is in your
+  camera frame and approaches when it is out of frame. If either reaches you,
+  it gets you. Survive ROUND_LENGTH seconds.
 
   WHAT STUDENTS TOUCH
     1. PARAMS   — tuning knobs. Change one, play, write down what it did.
@@ -85,7 +85,7 @@
 
 <div class="overlay" id="start">
   <h1>Don't Blink</h1>
-  <p>Something is in the room. It only moves when you're not looking at it. Find it with the camera. Keep it in frame. Survive.</p>
+  <p>Two angels are in the room. Each one moves when you're not looking at it. Find them with the camera. Keep turning. Survive.</p>
   <div class="opts">
     <label><input type="checkbox" id="optCartoon"> cartoon mode</label>
     <label><input type="checkbox" id="optFlash" checked> flash on catch</label>
@@ -111,7 +111,7 @@
    ========================================================================= */
 const PARAMS = {
   startDistance: 10,     // metres. Where it begins. 8–12 feels right.
-  speed:         1.0,    // metres per second while you are not looking.
+  speed:         0.3,    // metres per second while you are not looking; tuned for two angels.
   gracePeriod:   0.5,    // seconds out of frame before it starts moving.
                          //   0 = unfair (tracking flicker), 1.5 = too kind.
   catchDistance: 0.4,    // metres. Closer than this and it has you.
@@ -120,7 +120,8 @@ const PARAMS = {
   hysteresis:    4,      // degrees. Enters frame at fov/2, leaves at fov/2+hysteresis.
   requirePitch:  false,  // true = you must also look roughly at the horizon (±35°).
   heartbeatFrom: 3.5,    // metres. Heartbeat starts here.
-  spawnMinAngle: 70,     // degrees. It never spawns closer than this to where you look at start.
+  spawnMinAngle: 75,     // degrees. Each angel begins at least this far from your starting view.
+  secondAngelExtraDistance: 2, // metres. A little more time before the second catches you.
 };
 
 /* =========================================================================
@@ -151,7 +152,7 @@ function update(dt, inView, s) {
 
 /* =========================================================================
    3. TWISTS — pick one, implement it in update() / PARAMS, test on a victim.
-   - Two angels: make `angels` an array; you can't watch both. Sound becomes the game.
+   - A third angel: add another state and bearing. Sound becomes the game.
    - Actually don't blink: front camera + face landmarks; each blink = one step.
    - Cartoon mode is already a toggle. Why does the fear vanish but the fun stay?
    - Sound only: set DRAW_ANGEL = false. Now it's Marco Polo (→ P2).
@@ -210,16 +211,23 @@ addEventListener('keydown', e => {
 });
 
 /* ---- game state ---- */
-const game = { state: 'idle', t: 0, last: 0, inView: false, cartoon: false, flash: true, debug: false };
-const angel = { bearing: 0, distance: PARAMS.startDistance, outTime: 0, moving: false };
+const game = { state: 'idle', t: 0, last: 0, cartoon: false, flash: true, debug: false };
+const angels = [0, 1].map(index => ({
+  name: `angel ${index + 1}`, bearing: 0, startDistance: 0, distance: 0,
+  outTime: 0, moving: false, inView: false, stepTimer: 0,
+}));
 
 function spawn() {
   const base = aim.startYaw ?? aim.yaw;
   const side = Math.random() < 0.5 ? -1 : 1;
-  const off = PARAMS.spawnMinAngle + Math.random() * (180 - PARAMS.spawnMinAngle);
-  angel.bearing = base + side * off;
-  angel.distance = PARAMS.startDistance;
-  angel.outTime = 0; angel.moving = false;
+  for (const [index, angel] of angels.entries()) {
+    // Opposite sides keep both outside the starting frame and apart from each other.
+    const off = PARAMS.spawnMinAngle + Math.random() * 40;
+    angel.bearing = base + (index === 0 ? side : -side) * off;
+    angel.startDistance = PARAMS.startDistance + index * PARAMS.secondAngelExtraDistance;
+    angel.distance = angel.startDistance;
+    angel.outTime = 0; angel.moving = false; angel.inView = false; angel.stepTimer = 0;
+  }
 }
 
 async function startGame() {
@@ -260,15 +268,18 @@ async function setupCamera() {
   }
 }
 
-/* ---- audio: all synthesized, no files ---- */
-let AC = null, master = null, panner = null, stepGain = null, screamBuffer = null;
+/* ---- audio ---- */
+let AC = null, master = null, screamBuffer = null;
 function setupAudio() {
   if (AC) { AC.resume(); return; }
   AC = new (window.AudioContext || window.webkitAudioContext)();
   master = AC.createGain(); master.gain.value = 0.9; master.connect(AC.destination);
-  panner = AC.createStereoPanner ? AC.createStereoPanner() : null;
-  stepGain = AC.createGain(); stepGain.gain.value = 0.6;
-  if (panner) { stepGain.connect(panner); panner.connect(master); } else { stepGain.connect(master); }
+  for (const angel of angels) {
+    angel.stepGain = AC.createGain(); angel.stepGain.gain.value = 0.6;
+    angel.panner = AC.createStereoPanner ? AC.createStereoPanner() : null;
+    if (angel.panner) { angel.stepGain.connect(angel.panner); angel.panner.connect(master); }
+    else { angel.stepGain.connect(master); }
+  }
   fetch('assets/angel-scream.mp3')
     .then(response => { if (!response.ok) throw new Error('Scream audio unavailable'); return response.arrayBuffer(); })
     .then(data => AC.decodeAudioData(data))
@@ -280,24 +291,24 @@ function noiseBuffer(sec) {
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   return b;
 }
-function playStep(gainMul) {
+function playStep(gainMul, destination) {
   if (!AC) return;
   const t = AC.currentTime;
   if (game.cartoon) {           // "boing"
     const o = AC.createOscillator(), g = AC.createGain();
     o.type = 'sine'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(660, t + 0.12);
     g.gain.setValueAtTime(0.5 * gainMul, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-    o.connect(g); g.connect(stepGain); o.start(t); o.stop(t + 0.2);
+    o.connect(g); g.connect(destination); o.start(t); o.stop(t + 0.2);
     return;
   }
   const src = AC.createBufferSource(); src.buffer = noiseBuffer(0.08);
   const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
   const g = AC.createGain(); g.gain.setValueAtTime(0.9 * gainMul, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
-  src.connect(lp); lp.connect(g); g.connect(stepGain); src.start(t);
+  src.connect(lp); lp.connect(g); g.connect(destination); src.start(t);
   const o = AC.createOscillator(), og = AC.createGain();     // the thud
   o.type = 'sine'; o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
   og.gain.setValueAtTime(0.8 * gainMul, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-  o.connect(og); og.connect(stepGain); o.start(t); o.stop(t + 0.15);
+  o.connect(og); og.connect(destination); o.start(t); o.stop(t + 0.15);
 }
 function playHeart() {
   if (!AC) return;
@@ -382,54 +393,65 @@ const angelAttackImage = new Image();
 angelAttackImage.src = 'assets/angel-attack.webp';
 
 /* ---- loop ---- */
-let stepTimer = 0, heartTimer = 0;
+let heartTimer = 0;
 function loop(now) {
   if (game.state !== 'playing') return;
   const dt = Math.min(0.1, (now - game.last) / 1000); game.last = now; game.t += dt;
 
-  // is it in frame? (hysteresis so it doesn't flicker at the edge)
-  const dx = angleDiff(angel.bearing, aim.yaw);
+  // Each angel has its own frame check and grace timer.
   const half = PARAMS.fov / 2;
   const pitchOk = !PARAMS.requirePitch || Math.abs(aim.pitch) < 35;
-  if (game.inView) { if (Math.abs(dx) > half + PARAMS.hysteresis || !pitchOk) game.inView = false; }
-  else { if (Math.abs(dx) < half && pitchOk) game.inView = true; }
-
-  update(dt, game.inView, angel);
-  if (game.state !== 'playing') return;
+  for (const angel of angels) {
+    const dx = angleDiff(angel.bearing, aim.yaw);
+    if (angel.inView) { if (Math.abs(dx) > half + PARAMS.hysteresis || !pitchOk) angel.inView = false; }
+    else { if (Math.abs(dx) < half && pitchOk) angel.inView = true; }
+    update(dt, angel.inView, angel);
+    if (game.state !== 'playing') return;
+  }
 
   // win
   if (game.t >= PARAMS.roundLength) { onSurvived(); return; }
 
-  // sound: footsteps while it moves, heartbeat when close
-  const prox = 1 - Math.min(1, angel.distance / PARAMS.startDistance);
-  if (angel.moving) {
-    stepTimer -= dt;
-    if (stepTimer <= 0) {
-      if (panner) panner.pan.value = Math.max(-1, Math.min(1, Math.sin(rad(dx))));
-      playStep(0.25 + 0.75 * prox);
-      stepTimer = 0.28 + angel.distance * 0.06;
+  // Independent footsteps reveal which side is moving; the nearest sets the heartbeat.
+  const nearest = angels.reduce((a, b) => a.distance <= b.distance ? a : b);
+  const prox = 1 - Math.min(1, nearest.distance / nearest.startDistance);
+  for (const angel of angels) {
+    if (angel.moving) {
+      angel.stepTimer -= dt;
+      if (angel.stepTimer <= 0) {
+        const dx = angleDiff(angel.bearing, aim.yaw);
+        const closeness = 1 - Math.min(1, angel.distance / angel.startDistance);
+        if (angel.panner) angel.panner.pan.value = Math.max(-1, Math.min(1, Math.sin(rad(dx))));
+        playStep(0.25 + 0.75 * closeness, angel.stepGain);
+        angel.stepTimer = 0.28 + angel.distance * 0.06;
+      }
     }
   }
-  if (angel.distance < PARAMS.heartbeatFrom) {
+  if (nearest.distance < PARAMS.heartbeatFrom) {
     heartTimer -= dt;
-    if (heartTimer <= 0) { playHeart(); const bpm = 60 + 100 * (1 - angel.distance / PARAMS.heartbeatFrom); heartTimer = 60 / bpm; }
+    if (heartTimer <= 0) { playHeart(); const bpm = 60 + 100 * (1 - nearest.distance / PARAMS.heartbeatFrom); heartTimer = 60 / bpm; }
   }
 
   // draw
   ctx.clearRect(0, 0, W, H);
-  if (DRAW_ANGEL && Math.abs(dx) < half + 25) {
-    const sx = W / 2 + (dx / PARAMS.fov) * W;
-    const sy = H / 2 + (aim.pitch / 60) * H;
-    const h = Math.min(H * 2.5, H * 1.7 / Math.max(angel.distance, 0.4));
-    const art = angelStillImage.complete && angelStillImage.naturalWidth ? angelStillImage : sprite;
-    const w = h * art.width / art.height;
-    ctx.globalAlpha = 0.92;
-    ctx.drawImage(art, sx - w / 2, sy - h * 0.55, w, h);
-    ctx.globalAlpha = 1;
+  for (const angel of [...angels].sort((a, b) => b.distance - a.distance)) {
+    const dx = angleDiff(angel.bearing, aim.yaw);
+    if (DRAW_ANGEL && Math.abs(dx) < half + 25) {
+      const sx = W / 2 + (dx / PARAMS.fov) * W;
+      const sy = H / 2 + (aim.pitch / 60) * H;
+      const h = Math.min(H * 2.5, H * 1.7 / Math.max(angel.distance, 0.4));
+      const art = angelStillImage.complete && angelStillImage.naturalWidth ? angelStillImage : sprite;
+      const w = h * art.width / art.height;
+      ctx.globalAlpha = 0.92;
+      ctx.drawImage(art, sx - w / 2, sy - h * 0.55, w, h);
+      ctx.globalAlpha = 1;
+    }
   }
   vignette.style.opacity = Math.pow(prox, 1.6).toFixed(3);
   timeEl.textContent = game.t.toFixed(1);
-  if (game.debug) debugEl.textContent = `dist ${angel.distance.toFixed(2)} m\nyaw ${aim.yaw.toFixed(0)}°  bearing ${angel.bearing.toFixed(0)}°\ndx ${dx.toFixed(0)}°  ${game.inView ? 'IN VIEW' : 'out'}${angel.moving ? '  MOVING' : ''}`;
+  if (game.debug) debugEl.textContent = `yaw ${aim.yaw.toFixed(0)}°\n` + angels.map(angel =>
+    `${angel.name}: ${angel.distance.toFixed(2)} m  dx ${angleDiff(angel.bearing, aim.yaw).toFixed(0)}°  ${angel.inView ? 'IN VIEW' : 'out'}${angel.moving ? '  MOVING' : ''}`
+  ).join('\n');
 
   requestAnimationFrame(loop);
 }
@@ -455,12 +477,13 @@ function onCaught() {
 function onSurvived() {
   game.state = 'won';
   $('caughtTitle').textContent = 'You survived.';
-  $('caughtText').textContent = `${PARAMS.roundLength} seconds. It was ${angel.distance.toFixed(1)} m away.`;
+  const nearest = angels.reduce((a, b) => a.distance <= b.distance ? a : b);
+  $('caughtText').textContent = `${PARAMS.roundLength} seconds. The closest angel was ${nearest.distance.toFixed(1)} m away.`;
   $('caught').hidden = false;
 }
 
 $('btnStart').addEventListener('click', startGame);
-$('btnRetry').addEventListener('click', () => { game.inView = false; stepTimer = 0; heartTimer = 0; startGame(); });
+$('btnRetry').addEventListener('click', () => { heartTimer = 0; startGame(); });
 
 if (!window.isSecureContext) $('startNote').textContent = 'Camera and sensors need HTTPS. Host this file, then open the link on your phone.';
 else if (!('DeviceOrientationEvent' in window)) $('startNote').textContent = 'No motion sensors here — test mode: drag or use ← → to turn.';
